@@ -407,6 +407,174 @@ class WhyFirstEngine:
 
         return True
 
+    # ========== AI 辅助知识库维护 ==========
+
+    # AI 知识库操作建议的 Prompt 模板
+    AI_KNOWLEDGE_PROMPT = """你是知识库管理助手。请分析新知识并决定最佳操作。
+
+新知识:
+{new_knowledge}
+
+相似的历史知识:
+{similar_knowledge}
+
+请返回 JSON 格式:
+{{
+    "operation": "add" | "enhance" | "merge",
+    "target_title": "目标条目标题（enhance/merge 时填写）" 或 null,
+    "reason": "决策理由（一句话说明为什么选择这个操作）",
+    "suggested_content": "建议的内容（如需合并则提供合并后内容，如需增强则提供补充内容）"
+}}
+
+操作说明:
+- add: 创建新条目（内容完全不相关或相似度很低）
+- enhance: 增强现有条目（相似度较高，应补充而非创建）
+- merge: 合并条目（多个条目讨论同一主题）"""
+
+    def ai_suggest_knowledge_operation(self, new_knowledge: str,
+                                        threshold: float = 0.6) -> Dict[str, any]:
+        """
+        AI 辅助决策知识库操作
+
+        Args:
+            new_knowledge: 新知识内容
+            threshold: 相似度阈值
+
+        Returns:
+            {
+                'operation': 'add' | 'enhance' | 'merge',
+                'target': None | {'title': str, 'similarity': float},
+                'reason': str,
+                'suggested_content': str,
+                'ai_available': bool
+            }
+        """
+        # 检测相似条目
+        similar = self.detect_similar_knowledge(new_knowledge, threshold)
+
+        # AI 不可用时的降级逻辑
+        if not self.ai_client or not self.ai_client.available:
+            return self._fallback_knowledge_operation(new_knowledge, similar)
+
+        # 构建 Prompt
+        similar_text = "（无相似条目）"
+        if similar:
+            similar_items = []
+            for item in similar[:3]:
+                similar_items.append(f"- {item['title']} (相似度: {item['similarity']:.2%}):\n  {item['content'][:200]}...")
+            similar_text = "\n".join(similar_items)
+
+        prompt = self.AI_KNOWLEDGE_PROMPT.format(
+            new_knowledge=new_knowledge,
+            similar_knowledge=similar_text
+        )
+
+        # 调用 AI
+        try:
+            result = self.ai_client.call(prompt, "", max_tokens=1024)
+
+            if result and 'operation' in result:
+                operation = result.get('operation', 'add')
+                target_title = result.get('target_title')
+                reason = result.get('reason', 'AI 建议')
+                suggested_content = result.get('suggested_content', new_knowledge)
+
+                # 找到目标条目
+                target = None
+                if target_title and operation in ['enhance', 'merge']:
+                    for item in similar:
+                        if target_title in item['title'] or item['title'] in target_title:
+                            target = item
+                            break
+                    if not target and similar:
+                        target = similar[0]
+
+                return {
+                    'operation': operation,
+                    'target': target,
+                    'reason': reason,
+                    'suggested_content': suggested_content,
+                    'ai_available': True
+                }
+        except Exception as e:
+            pass
+
+        # AI 调用失败，降级
+        return self._fallback_knowledge_operation(new_knowledge, similar)
+
+    def _fallback_knowledge_operation(self, new_knowledge: str,
+                                       similar: List[Dict]) -> Dict[str, any]:
+        """降级：基于相似度的知识库操作决策"""
+        if not similar:
+            return {
+                'operation': 'add',
+                'target': None,
+                'reason': '未发现相似条目，建议创建新条目',
+                'suggested_content': new_knowledge,
+                'ai_available': False
+            }
+
+        top_similar = similar[0]
+        similarity = top_similar['similarity']
+
+        if similarity > 0.8:
+            return {
+                'operation': 'enhance',
+                'target': top_similar,
+                'reason': f'相似度 {similarity:.2%} 较高，建议增强现有条目',
+                'suggested_content': new_knowledge,
+                'ai_available': False
+            }
+        elif similarity > 0.6:
+            return {
+                'operation': 'merge',
+                'target': top_similar,
+                'reason': f'相似度 {similarity:.2%}，建议考虑合并',
+                'suggested_content': f"{top_similar['content']}\n\n---\n\n{new_knowledge}",
+                'ai_available': False
+            }
+        else:
+            return {
+                'operation': 'add',
+                'target': None,
+                'reason': f'相似度 {similarity:.2%} 较低，建议创建新条目',
+                'suggested_content': new_knowledge,
+                'ai_available': False
+            }
+
+    def execute_knowledge_operation(self, operation: str, category: str,
+                                    title: str, content: str,
+                                    target: Dict = None) -> bool:
+        """
+        执行知识库操作
+
+        Args:
+            operation: 操作类型 ('add', 'enhance', 'merge')
+            category: 分类
+            title: 标题
+            content: 内容
+            target: 目标条目（enhance/merge 时需要）
+
+        Returns:
+            是否成功
+        """
+        if operation == 'add':
+            return self.add_knowledge(category, title, content)
+
+        elif operation == 'enhance':
+            if not target:
+                return False
+            return self.enhance_knowledge(target['title'], content)
+
+        elif operation == 'merge':
+            if not target:
+                return False
+            # 简单实现：先增强现有条目
+            merged_content = f"**合并内容**:\n\n{content}"
+            return self.enhance_knowledge(target['title'], merged_content)
+
+        return False
+
     # ========== Why Questions 注入与验证 ==========
 
     def inject_questions_to_research(self, task_path: str,

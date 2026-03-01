@@ -2,7 +2,9 @@
 
 ## 执行步骤
 
-### 1. 检测相似知识
+### 1. AI 辅助决策（推荐）
+
+使用 AI 自动分析新知识并建议最佳操作：
 
 ```python
 import sys
@@ -16,6 +18,41 @@ new_knowledge = """
 用户输入的新知识内容
 """
 
+# 【推荐】AI 辅助决策
+suggestion = why_engine.ai_suggest_knowledge_operation(new_knowledge)
+
+print(f"🤖 AI 建议: {suggestion['operation']}")
+print(f"   理由: {suggestion['reason']}")
+print(f"   AI 可用: {suggestion['ai_available']}")
+
+if suggestion['target']:
+    print(f"   目标条目: {suggestion['target']['title']}")
+    print(f"   相似度: {suggestion['target']['similarity']:.2%}")
+```
+
+### 2. 执行建议的操作
+
+```python
+# 直接执行 AI 建议的操作
+success = why_engine.execute_knowledge_operation(
+    operation=suggestion['operation'],
+    category="架构决策",  # 或 核心理念/经验教训/常见问题
+    title="新知识标题",
+    content=suggestion['suggested_content'],
+    target=suggestion['target']
+)
+
+if success:
+    print(f"✅ 已执行操作: {suggestion['operation']}")
+else:
+    print("❌ 操作失败")
+```
+
+### 3. 手动模式（可选）
+
+如果需要手动控制，可以使用传统方法：
+
+```python
 # 检测相似条目
 similar_items = why_engine.detect_similar_knowledge(new_knowledge, threshold=0.7)
 
@@ -23,70 +60,11 @@ if similar_items:
     print(f"🔍 发现 {len(similar_items)} 个相似条目:\n")
     for item in similar_items:
         print(f"  - {item['title']} (相似度: {item['similarity']:.2%})")
-        print(f"    {item['content'][:100]}...")
-        print()
-```
 
-### 2. 建议操作
-
-根据相似度提供建议：
-
-```python
-if similar_items:
-    top_similar = similar_items[0]
-
-    if top_similar['similarity'] > 0.8:
-        print("💡 建议: 增强现有条目")
-        print(f"   条目: {top_similar['title']}")
-        print(f"   操作: 添加补充信息而不是创建新条目")
-
-    elif top_similar['similarity'] > 0.6:
-        print("💡 建议: 考虑合并")
-        merge_suggestion = why_engine.suggest_merge(
-            {'title': '新知识', 'content': new_knowledge},
-            top_similar
-        )
-        print(f"   合并标题: {merge_suggestion['merged_title']}")
-        print(f"   理由: {merge_suggestion['reason']}")
-
-    else:
-        print("💡 建议: 创建新条目")
-        print("   相似度较低，建议创建独立条目")
-else:
-    print("✅ 未发现相似条目，可以直接添加")
-```
-
-### 3. 执行操作
-
-根据用户选择执行操作：
-
-**选项 A: 增强现有条目**
-
-```python
-success = why_engine.enhance_knowledge(
-    title=top_similar['title'],
-    additional_info=new_knowledge
-)
-
-if success:
-    print(f"✅ 已增强条目: {top_similar['title']}")
-else:
-    print("❌ 增强失败")
-```
-
-**选项 B: 创建新条目**
-
-```python
-success = why_engine.add_knowledge(
-    category="架构决策",  # 或其他分类
-    title="新知识标题",
-    content=new_knowledge
-)
-
-if success:
-    print("✅ 已添加新条目")
-else:
-    print("❌ 添加失败")
+# 手动选择操作
+# - 添加新条目: why_engine.add_knowledge(category, title, content)
+# - 增强现有条目: why_engine.enhance_knowledge(title, additional_info)
+# - 合并建议: why_engine.suggest_merge(item1, item2)
 ```
 
 ### 4. 显示更新后的知识库
@@ -101,12 +79,20 @@ for item in recent:
     print()
 ```
 
-## 知识相似度检测
+## 操作类型说明
 
-使用 SequenceMatcher 计算文本相似度：
-- 0.8+ : 高度相似，建议增强现有条目
-- 0.6-0.8 : 中度相似，建议考虑合并
-- 0.6- : 低相似度，建议创建新条目
+| 操作 | 说明 | 触发条件 |
+|------|------|----------|
+| `add` | 创建新条目 | 无相似条目或相似度 < 0.6 |
+| `enhance` | 增强现有条目 | 相似度 > 0.8，添加补充信息 |
+| `merge` | 合并条目 | 相似度 0.6-0.8，讨论同一主题 |
+
+## AI 辅助 vs 手动模式
+
+| 模式 | 优点 | 适用场景 |
+|------|------|----------|
+| **AI 辅助** | 智能分析、自动决策、省时 | 大多数情况 |
+| **手动模式** | 精确控制、理解每一步 | 需要人工审核时 |
 
 ## 使用场景
 
@@ -117,7 +103,7 @@ for item in recent:
 
 ## 注意事项
 
-- 避免重复添加相似内容
-- 定期检查和合并相似条目
-- 保持知识库的组织性
-- 及时更新过时信息
+- AI 不可用时会自动降级到基于相似度的决策
+- 增强操作会在条目末尾添加补充信息
+- 合并操作会保留原有内容并添加新内容
+- 定期检查知识库，保持组织性
