@@ -5,14 +5,33 @@ Why-First 引擎
 
 import os
 import re
+import json
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
 from difflib import SequenceMatcher
 
+from lib.core import AIClient
+
 
 class WhyFirstEngine:
     """Why-First 引擎"""
+
+    # AI 生成问题的 Prompt 模板
+    AI_QUESTION_PROMPT = """你是深度思考助手。请为以下任务生成 5-8 个"Why"问题。
+
+任务名称: {task_name}
+任务描述: {description}
+
+{historical_context}
+
+要求:
+1. 问题应基于任务描述的具体内容，避免泛泛而谈
+2. 参考历史决策，生成针对性的对比问题
+3. 问题应涵盖: 核心动机、方案选择、潜在风险、依赖关系
+4. 返回 JSON 格式: {{"questions": ["问题1", "问题2", ...]}}
+5. 问题应该是开放式的，引导深度思考
+6. 问题数量控制在 5-8 个"""
 
     def __init__(self, project_root: Optional[str] = None):
         """
@@ -23,27 +42,104 @@ class WhyFirstEngine:
         """
         self.project_root = Path(project_root or os.getcwd())
         self.project_why_file = self.project_root / 'project-why.md'
+        self._ai_client = None
 
-    def generate_why_questions(self, task_name: str, description: str) -> List[str]:
+    @property
+    def ai_client(self) -> Optional[AIClient]:
+        """懒加载 AI 客户端"""
+        if self._ai_client is None:
+            self._ai_client = AIClient()
+        return self._ai_client
+
+    def generate_why_questions(self, task_name: str, description: str,
+                               use_ai: bool = True) -> Dict[str, any]:
         """
-        生成 Why 问题
+        生成 Why 问题（AI 增强）
 
         Args:
             task_name: 任务名称
             description: 任务描述
+            use_ai: 是否使用 AI 增强
 
         Returns:
-            Why 问题列表
+            {
+                'questions': List[str],  # 问题列表
+                'source': str,           # 'ai_generated' 或 'template'
+                'ai_available': bool     # AI 是否可用
+            }
         """
-        questions = [
+        # 尝试 AI 生成
+        if use_ai and self.ai_client and self.ai_client.available:
+            result = self._generate_ai_questions(task_name, description)
+            if result['questions']:
+                return result
+
+        # 降级到固定模板
+        return {
+            'questions': self._generate_template_questions(task_name),
+            'source': 'template',
+            'ai_available': self.ai_client.available if self.ai_client else False
+        }
+
+    def _generate_ai_questions(self, task_name: str, description: str) -> Dict[str, any]:
+        """使用 AI 生成针对性问题"""
+        # 收集历史上下文
+        historical = self.search_knowledge(task_name)
+        recent = self.get_recent_knowledge(limit=3)
+
+        # 构建历史上下文
+        historical_context = ""
+        if historical or recent:
+            context_parts = ["相关历史决策:"]
+            for item in (historical[:2] + recent)[:3]:
+                context_parts.append(f"- {item['title']}: {item['content'][:100]}...")
+            historical_context = "\n".join(context_parts)
+        else:
+            historical_context = "（暂无相关历史决策）"
+
+        # 构建 Prompt
+        prompt = self.AI_QUESTION_PROMPT.format(
+            task_name=task_name,
+            description=description,
+            historical_context=historical_context
+        )
+
+        # 调用 AI
+        try:
+            result = self.ai_client.call(prompt, "", max_tokens=1024)
+
+            if result and 'questions' in result:
+                questions = result['questions']
+                # 过滤和清理问题
+                questions = [q.strip() for q in questions if q and len(q.strip()) > 5]
+                # 限制数量
+                questions = questions[:8]
+
+                if len(questions) >= 3:
+                    return {
+                        'questions': questions,
+                        'source': 'ai_generated',
+                        'ai_available': True
+                    }
+        except Exception as e:
+            pass
+
+        # AI 生成失败
+        return {
+            'questions': [],
+            'source': 'ai_failed',
+            'ai_available': True
+        }
+
+    def _generate_template_questions(self, task_name: str) -> List[str]:
+        """生成固定模板问题（降级方案）"""
+        return [
             f"为什么需要 {task_name}？",
             f"为什么现在做 {task_name}？",
             f"为什么选择这种方式实现 {task_name}？",
             f"为什么不用其他方案？",
             f"{task_name} 的核心价值是什么？"
         ]
-
-        return questions
 
     def add_knowledge(self, category: str, title: str, content: str) -> bool:
         """
@@ -313,37 +409,96 @@ class WhyFirstEngine:
 
     # ========== Why Questions 注入与验证 ==========
 
-    def inject_questions_to_research(self, task_path: str, questions: List[str],
-                                     source: str = "template") -> bool:
+    def inject_questions_to_research(self, task_path: str,
+                                     questions: any = None,
+                                     source: str = "template",
+                                     task_name: str = None,
+                                     description: str = None,
+                                     use_ai: bool = True) -> Dict[str, any]:
         """
         将 Why 问题注入到 research.md
 
+        支持两种调用方式：
+        1. 传入 questions 列表：直接注入
+        2. 传入 task_name + description：自动生成并注入
+
         Args:
             task_path: 任务目录路径
-            questions: Why 问题列表
+            questions: Why 问题列表或 Dict（来自 generate_why_questions）
             source: 问题来源 ("template" 或 "ai_generated")
+            task_name: 任务名称（用于自动生成问题）
+            description: 任务描述（用于自动生成问题）
+            use_ai: 是否使用 AI 生成问题
 
         Returns:
-            是否成功
+            {
+                'success': bool,
+                'questions': List[str],
+                'source': str,
+                'ai_available': bool
+            }
         """
         research_path = Path(task_path) / "research.md"
 
         if not research_path.exists():
-            return False
+            return {
+                'success': False,
+                'questions': [],
+                'source': 'error',
+                'ai_available': False,
+                'error': 'research.md not found'
+            }
+
+        # 确定问题和来源
+        if questions is None and task_name:
+            # 自动生成问题
+            result = self.generate_why_questions(task_name, description or "", use_ai)
+            question_list = result['questions']
+            source = result['source']
+            ai_available = result['ai_available']
+        elif isinstance(questions, dict):
+            # 传入的是 Dict 格式
+            question_list = questions.get('questions', [])
+            source = questions.get('source', source)
+            ai_available = questions.get('ai_available', False)
+        elif isinstance(questions, list):
+            # 传入的是 List 格式（兼容旧版）
+            question_list = questions
+            ai_available = False
+        else:
+            return {
+                'success': False,
+                'questions': [],
+                'source': 'error',
+                'ai_available': False,
+                'error': 'Invalid questions format'
+            }
+
+        if not question_list:
+            # 生成失败，使用默认模板
+            if task_name:
+                question_list = self._generate_template_questions(task_name)
+                source = 'template_fallback'
+            else:
+                return {
+                    'success': False,
+                    'questions': [],
+                    'source': 'error',
+                    'ai_available': ai_available,
+                    'error': 'No questions to inject'
+                }
 
         with open(research_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
         # 生成 Why Questions 内容
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
-        why_section = self._generate_why_section(questions, timestamp, source)
+        why_section = self._generate_why_section(question_list, timestamp, source)
 
         # 查找并替换 Why Questions 部分
-        # 匹配 "## 4. Why Questions" 到 "## 5." 之间的内容
         pattern = r'(## 4\. Why Questions.*?)(## 5\.)'
 
         if re.search(pattern, content, re.DOTALL):
-            # 替换现有内容
             new_content = re.sub(
                 pattern,
                 f'{why_section}\n\n\\2',
@@ -351,13 +506,18 @@ class WhyFirstEngine:
                 flags=re.DOTALL
             )
         else:
-            # 如果没有找到，尝试在文件末尾插入
             new_content = content.rstrip() + '\n\n' + why_section + '\n'
 
         with open(research_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
 
-        return True
+        return {
+            'success': True,
+            'questions': question_list,
+            'source': source,
+            'ai_available': ai_available,
+            'count': len(question_list)
+        }
 
     def _generate_why_section(self, questions: List[str], timestamp: str,
                               source: str) -> str:
