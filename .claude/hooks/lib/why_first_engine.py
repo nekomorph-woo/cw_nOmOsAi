@@ -310,3 +310,184 @@ class WhyFirstEngine:
             f.write(updated_content)
 
         return True
+
+    # ========== Why Questions 注入与验证 ==========
+
+    def inject_questions_to_research(self, task_path: str, questions: List[str],
+                                     source: str = "template") -> bool:
+        """
+        将 Why 问题注入到 research.md
+
+        Args:
+            task_path: 任务目录路径
+            questions: Why 问题列表
+            source: 问题来源 ("template" 或 "ai_generated")
+
+        Returns:
+            是否成功
+        """
+        research_path = Path(task_path) / "research.md"
+
+        if not research_path.exists():
+            return False
+
+        with open(research_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 生成 Why Questions 内容
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+        why_section = self._generate_why_section(questions, timestamp, source)
+
+        # 查找并替换 Why Questions 部分
+        # 匹配 "## 4. Why Questions" 到 "## 5." 之间的内容
+        pattern = r'(## 4\. Why Questions.*?)(## 5\.)'
+
+        if re.search(pattern, content, re.DOTALL):
+            # 替换现有内容
+            new_content = re.sub(
+                pattern,
+                f'{why_section}\n\n\\2',
+                content,
+                flags=re.DOTALL
+            )
+        else:
+            # 如果没有找到，尝试在文件末尾插入
+            new_content = content.rstrip() + '\n\n' + why_section + '\n'
+
+        with open(research_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        return True
+
+    def _generate_why_section(self, questions: List[str], timestamp: str,
+                              source: str) -> str:
+        """生成 Why Questions 部分的 Markdown 内容"""
+        lines = [
+            "## 4. Why Questions",
+            "",
+            f"> **状态**: [pending]",
+            f"> **生成时间**: {timestamp}",
+            f"> **来源**: {source}",
+            f"> **问题数量**: {len(questions)}",
+            ""
+        ]
+
+        for i, question in enumerate(questions, 1):
+            lines.extend([
+                f"### 4.{i} {question}",
+                "",
+                "（请在此回答）",
+                ""
+            ])
+
+        return '\n'.join(lines)
+
+    def mark_why_questions_answered(self, task_path: str) -> bool:
+        """
+        标记 Why Questions 已回答
+
+        Args:
+            task_path: 任务目录路径
+
+        Returns:
+            是否成功
+        """
+        research_path = Path(task_path) / "research.md"
+
+        if not research_path.exists():
+            return False
+
+        with open(research_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 更新状态标记
+        new_content = re.sub(
+            r'> \*\*状态\*\*: \[pending\]',
+            '> **状态**: [answered]',
+            content
+        )
+
+        if new_content == content:
+            # 没有变化，可能已经是 answered 或没有该标记
+            return False
+
+        with open(research_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        return True
+
+    def check_why_completion(self, task_path: str) -> Dict[str, any]:
+        """
+        检查 Why Questions 完成情况
+
+        Args:
+            task_path: 任务目录路径
+
+        Returns:
+            {
+                'has_why_section': bool,
+                'status': 'pending' | 'answered' | 'missing',
+                'total_questions': int,
+                'answered_questions': int,
+                'unanswered': List[str]
+            }
+        """
+        research_path = Path(task_path) / "research.md"
+
+        if not research_path.exists():
+            return {
+                'has_why_section': False,
+                'status': 'missing',
+                'total_questions': 0,
+                'answered_questions': 0,
+                'unanswered': []
+            }
+
+        with open(research_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 提取 Why Questions 部分
+        why_match = re.search(
+            r'## 4\. Why Questions(.*?)(?=## 5\.|\Z)',
+            content, re.DOTALL
+        )
+
+        if not why_match:
+            return {
+                'has_why_section': False,
+                'status': 'missing',
+                'total_questions': 0,
+                'answered_questions': 0,
+                'unanswered': []
+            }
+
+        why_section = why_match.group(1)
+
+        # 检查状态
+        status_match = re.search(r'> \*\*状态\*\*: \[(\w+)\]', why_section)
+        status = status_match.group(1).lower() if status_match else 'pending'
+
+        # 统计问题
+        question_pattern = r'### 4\.(\d+) (.+?)\n\n(.*?)(?=### 4\.\d+|$)'
+        questions = re.findall(question_pattern, why_section, re.DOTALL)
+        total = len(questions)
+
+        # 检查每个问题是否有回答
+        answered = 0
+        unanswered = []
+
+        for _, question_title, answer in questions:
+            answer_text = answer.strip()
+            # 检查是否有实质内容（非占位符且超过 10 字符）
+            if len(answer_text) > 10 and not answer_text.startswith('（'):
+                answered += 1
+            else:
+                unanswered.append(question_title.strip())
+
+        return {
+            'has_why_section': True,
+            'status': status,
+            'total_questions': total,
+            'answered_questions': answered,
+            'unanswered': unanswered
+        }

@@ -61,16 +61,31 @@ print(f"✅ 已创建并切换到分支: {branch_name}")
 **目标**: 深度思考任务的本质和价值
 
 **步骤**:
-1. 使用 WhyFirstEngine 生成 Why 问题：
+1. 使用 WhyFirstEngine 生成并注入 Why 问题：
 ```python
 from lib.why_first_engine import WhyFirstEngine
 
 why_engine = WhyFirstEngine()
+
+# 生成 Why 问题
 questions = why_engine.generate_why_questions("任务名", "任务描述")
+
+# 【重要】自动注入问题到 research.md
+why_engine.inject_questions_to_research(
+    task_path=str(task.path),  # 任务目录路径
+    questions=questions,
+    source="template"  # 或 "ai_generated" 如果使用 AI 生成
+)
+
+print(f"✅ 已生成 {len(questions)} 个 Why 问题并注入到 research.md")
 ```
 
-2. 在 research.md 的 "Why Questions" 部分回答这些问题
-3. 将重要的决策和教训添加到 project-why.md：
+2. 在 research.md 的 "Why Questions" 部分回答这些注入的问题
+3. 回答完成后，标记 Why Questions 为已回答：
+```python
+why_engine.mark_why_questions_answered(str(task.path))
+```
+4. 将重要的决策和教训添加到 project-why.md：
 ```python
 why_engine.add_knowledge(
     category="架构决策",  # 或 核心理念/经验教训/常见问题
