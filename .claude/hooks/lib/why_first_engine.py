@@ -5,14 +5,33 @@ Why-First 引擎
 
 import os
 import re
+import json
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
 from difflib import SequenceMatcher
 
+from lib.core import AIClient
+
 
 class WhyFirstEngine:
     """Why-First 引擎"""
+
+    # AI 生成问题的 Prompt 模板
+    AI_QUESTION_PROMPT = """你是深度思考助手。请为以下任务生成 5-8 个"Why"问题。
+
+任务名称: {task_name}
+任务描述: {description}
+
+{historical_context}
+
+要求:
+1. 问题应基于任务描述的具体内容，避免泛泛而谈
+2. 参考历史决策，生成针对性的对比问题
+3. 问题应涵盖: 核心动机、方案选择、潜在风险、依赖关系
+4. 返回 JSON 格式: {{"questions": ["问题1", "问题2", ...]}}
+5. 问题应该是开放式的，引导深度思考
+6. 问题数量控制在 5-8 个"""
 
     def __init__(self, project_root: Optional[str] = None):
         """
@@ -23,27 +42,104 @@ class WhyFirstEngine:
         """
         self.project_root = Path(project_root or os.getcwd())
         self.project_why_file = self.project_root / 'project-why.md'
+        self._ai_client = None
 
-    def generate_why_questions(self, task_name: str, description: str) -> List[str]:
+    @property
+    def ai_client(self) -> Optional[AIClient]:
+        """懒加载 AI 客户端"""
+        if self._ai_client is None:
+            self._ai_client = AIClient()
+        return self._ai_client
+
+    def generate_why_questions(self, task_name: str, description: str,
+                               use_ai: bool = True) -> Dict[str, any]:
         """
-        生成 Why 问题
+        生成 Why 问题（AI 增强）
 
         Args:
             task_name: 任务名称
             description: 任务描述
+            use_ai: 是否使用 AI 增强
 
         Returns:
-            Why 问题列表
+            {
+                'questions': List[str],  # 问题列表
+                'source': str,           # 'ai_generated' 或 'template'
+                'ai_available': bool     # AI 是否可用
+            }
         """
-        questions = [
+        # 尝试 AI 生成
+        if use_ai and self.ai_client and self.ai_client.available:
+            result = self._generate_ai_questions(task_name, description)
+            if result['questions']:
+                return result
+
+        # 降级到固定模板
+        return {
+            'questions': self._generate_template_questions(task_name),
+            'source': 'template',
+            'ai_available': self.ai_client.available if self.ai_client else False
+        }
+
+    def _generate_ai_questions(self, task_name: str, description: str) -> Dict[str, any]:
+        """使用 AI 生成针对性问题"""
+        # 收集历史上下文
+        historical = self.search_knowledge(task_name)
+        recent = self.get_recent_knowledge(limit=3)
+
+        # 构建历史上下文
+        historical_context = ""
+        if historical or recent:
+            context_parts = ["相关历史决策:"]
+            for item in (historical[:2] + recent)[:3]:
+                context_parts.append(f"- {item['title']}: {item['content'][:100]}...")
+            historical_context = "\n".join(context_parts)
+        else:
+            historical_context = "（暂无相关历史决策）"
+
+        # 构建 Prompt
+        prompt = self.AI_QUESTION_PROMPT.format(
+            task_name=task_name,
+            description=description,
+            historical_context=historical_context
+        )
+
+        # 调用 AI
+        try:
+            result = self.ai_client.call(prompt, "", max_tokens=1024)
+
+            if result and 'questions' in result:
+                questions = result['questions']
+                # 过滤和清理问题
+                questions = [q.strip() for q in questions if q and len(q.strip()) > 5]
+                # 限制数量
+                questions = questions[:8]
+
+                if len(questions) >= 3:
+                    return {
+                        'questions': questions,
+                        'source': 'ai_generated',
+                        'ai_available': True
+                    }
+        except Exception as e:
+            pass
+
+        # AI 生成失败
+        return {
+            'questions': [],
+            'source': 'ai_failed',
+            'ai_available': True
+        }
+
+    def _generate_template_questions(self, task_name: str) -> List[str]:
+        """生成固定模板问题（降级方案）"""
+        return [
             f"为什么需要 {task_name}？",
             f"为什么现在做 {task_name}？",
             f"为什么选择这种方式实现 {task_name}？",
             f"为什么不用其他方案？",
             f"{task_name} 的核心价值是什么？"
         ]
-
-        return questions
 
     def add_knowledge(self, category: str, title: str, content: str) -> bool:
         """
@@ -310,3 +406,416 @@ class WhyFirstEngine:
             f.write(updated_content)
 
         return True
+
+    # ========== AI 辅助知识库维护 ==========
+
+    # AI 知识库操作建议的 Prompt 模板
+    AI_KNOWLEDGE_PROMPT = """你是知识库管理助手。请分析新知识并决定最佳操作。
+
+新知识:
+{new_knowledge}
+
+相似的历史知识:
+{similar_knowledge}
+
+请返回 JSON 格式:
+{{
+    "operation": "add" | "enhance" | "merge",
+    "target_title": "目标条目标题（enhance/merge 时填写）" 或 null,
+    "reason": "决策理由（一句话说明为什么选择这个操作）",
+    "suggested_content": "建议的内容（如需合并则提供合并后内容，如需增强则提供补充内容）"
+}}
+
+操作说明:
+- add: 创建新条目（内容完全不相关或相似度很低）
+- enhance: 增强现有条目（相似度较高，应补充而非创建）
+- merge: 合并条目（多个条目讨论同一主题）"""
+
+    def ai_suggest_knowledge_operation(self, new_knowledge: str,
+                                        threshold: float = 0.6) -> Dict[str, any]:
+        """
+        AI 辅助决策知识库操作
+
+        Args:
+            new_knowledge: 新知识内容
+            threshold: 相似度阈值
+
+        Returns:
+            {
+                'operation': 'add' | 'enhance' | 'merge',
+                'target': None | {'title': str, 'similarity': float},
+                'reason': str,
+                'suggested_content': str,
+                'ai_available': bool
+            }
+        """
+        # 检测相似条目
+        similar = self.detect_similar_knowledge(new_knowledge, threshold)
+
+        # AI 不可用时的降级逻辑
+        if not self.ai_client or not self.ai_client.available:
+            return self._fallback_knowledge_operation(new_knowledge, similar)
+
+        # 构建 Prompt
+        similar_text = "（无相似条目）"
+        if similar:
+            similar_items = []
+            for item in similar[:3]:
+                similar_items.append(f"- {item['title']} (相似度: {item['similarity']:.2%}):\n  {item['content'][:200]}...")
+            similar_text = "\n".join(similar_items)
+
+        prompt = self.AI_KNOWLEDGE_PROMPT.format(
+            new_knowledge=new_knowledge,
+            similar_knowledge=similar_text
+        )
+
+        # 调用 AI
+        try:
+            result = self.ai_client.call(prompt, "", max_tokens=1024)
+
+            if result and 'operation' in result:
+                operation = result.get('operation', 'add')
+                target_title = result.get('target_title')
+                reason = result.get('reason', 'AI 建议')
+                suggested_content = result.get('suggested_content', new_knowledge)
+
+                # 找到目标条目
+                target = None
+                if target_title and operation in ['enhance', 'merge']:
+                    for item in similar:
+                        if target_title in item['title'] or item['title'] in target_title:
+                            target = item
+                            break
+                    if not target and similar:
+                        target = similar[0]
+
+                return {
+                    'operation': operation,
+                    'target': target,
+                    'reason': reason,
+                    'suggested_content': suggested_content,
+                    'ai_available': True
+                }
+        except Exception as e:
+            pass
+
+        # AI 调用失败，降级
+        return self._fallback_knowledge_operation(new_knowledge, similar)
+
+    def _fallback_knowledge_operation(self, new_knowledge: str,
+                                       similar: List[Dict]) -> Dict[str, any]:
+        """降级：基于相似度的知识库操作决策"""
+        if not similar:
+            return {
+                'operation': 'add',
+                'target': None,
+                'reason': '未发现相似条目，建议创建新条目',
+                'suggested_content': new_knowledge,
+                'ai_available': False
+            }
+
+        top_similar = similar[0]
+        similarity = top_similar['similarity']
+
+        if similarity > 0.8:
+            return {
+                'operation': 'enhance',
+                'target': top_similar,
+                'reason': f'相似度 {similarity:.2%} 较高，建议增强现有条目',
+                'suggested_content': new_knowledge,
+                'ai_available': False
+            }
+        elif similarity > 0.6:
+            return {
+                'operation': 'merge',
+                'target': top_similar,
+                'reason': f'相似度 {similarity:.2%}，建议考虑合并',
+                'suggested_content': f"{top_similar['content']}\n\n---\n\n{new_knowledge}",
+                'ai_available': False
+            }
+        else:
+            return {
+                'operation': 'add',
+                'target': None,
+                'reason': f'相似度 {similarity:.2%} 较低，建议创建新条目',
+                'suggested_content': new_knowledge,
+                'ai_available': False
+            }
+
+    def execute_knowledge_operation(self, operation: str, category: str,
+                                    title: str, content: str,
+                                    target: Dict = None) -> bool:
+        """
+        执行知识库操作
+
+        Args:
+            operation: 操作类型 ('add', 'enhance', 'merge')
+            category: 分类
+            title: 标题
+            content: 内容
+            target: 目标条目（enhance/merge 时需要）
+
+        Returns:
+            是否成功
+        """
+        if operation == 'add':
+            return self.add_knowledge(category, title, content)
+
+        elif operation == 'enhance':
+            if not target:
+                return False
+            return self.enhance_knowledge(target['title'], content)
+
+        elif operation == 'merge':
+            if not target:
+                return False
+            # 简单实现：先增强现有条目
+            merged_content = f"**合并内容**:\n\n{content}"
+            return self.enhance_knowledge(target['title'], merged_content)
+
+        return False
+
+    # ========== Why Questions 注入与验证 ==========
+
+    def inject_questions_to_research(self, task_path: str,
+                                     questions: any = None,
+                                     source: str = "template",
+                                     task_name: str = None,
+                                     description: str = None,
+                                     use_ai: bool = True) -> Dict[str, any]:
+        """
+        将 Why 问题注入到 research.md
+
+        支持两种调用方式：
+        1. 传入 questions 列表：直接注入
+        2. 传入 task_name + description：自动生成并注入
+
+        Args:
+            task_path: 任务目录路径
+            questions: Why 问题列表或 Dict（来自 generate_why_questions）
+            source: 问题来源 ("template" 或 "ai_generated")
+            task_name: 任务名称（用于自动生成问题）
+            description: 任务描述（用于自动生成问题）
+            use_ai: 是否使用 AI 生成问题
+
+        Returns:
+            {
+                'success': bool,
+                'questions': List[str],
+                'source': str,
+                'ai_available': bool
+            }
+        """
+        research_path = Path(task_path) / "research.md"
+
+        if not research_path.exists():
+            return {
+                'success': False,
+                'questions': [],
+                'source': 'error',
+                'ai_available': False,
+                'error': 'research.md not found'
+            }
+
+        # 确定问题和来源
+        if questions is None and task_name:
+            # 自动生成问题
+            result = self.generate_why_questions(task_name, description or "", use_ai)
+            question_list = result['questions']
+            source = result['source']
+            ai_available = result['ai_available']
+        elif isinstance(questions, dict):
+            # 传入的是 Dict 格式
+            question_list = questions.get('questions', [])
+            source = questions.get('source', source)
+            ai_available = questions.get('ai_available', False)
+        elif isinstance(questions, list):
+            # 传入的是 List 格式（兼容旧版）
+            question_list = questions
+            ai_available = False
+        else:
+            return {
+                'success': False,
+                'questions': [],
+                'source': 'error',
+                'ai_available': False,
+                'error': 'Invalid questions format'
+            }
+
+        if not question_list:
+            # 生成失败，使用默认模板
+            if task_name:
+                question_list = self._generate_template_questions(task_name)
+                source = 'template_fallback'
+            else:
+                return {
+                    'success': False,
+                    'questions': [],
+                    'source': 'error',
+                    'ai_available': ai_available,
+                    'error': 'No questions to inject'
+                }
+
+        with open(research_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 生成 Why Questions 内容
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+        why_section = self._generate_why_section(question_list, timestamp, source)
+
+        # 查找并替换 Why Questions 部分
+        pattern = r'(## 4\. Why Questions.*?)(## 5\.)'
+
+        if re.search(pattern, content, re.DOTALL):
+            new_content = re.sub(
+                pattern,
+                f'{why_section}\n\n\\2',
+                content,
+                flags=re.DOTALL
+            )
+        else:
+            new_content = content.rstrip() + '\n\n' + why_section + '\n'
+
+        with open(research_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        return {
+            'success': True,
+            'questions': question_list,
+            'source': source,
+            'ai_available': ai_available,
+            'count': len(question_list)
+        }
+
+    def _generate_why_section(self, questions: List[str], timestamp: str,
+                              source: str) -> str:
+        """生成 Why Questions 部分的 Markdown 内容"""
+        lines = [
+            "## 4. Why Questions",
+            "",
+            f"> **状态**: [pending]",
+            f"> **生成时间**: {timestamp}",
+            f"> **来源**: {source}",
+            f"> **问题数量**: {len(questions)}",
+            ""
+        ]
+
+        for i, question in enumerate(questions, 1):
+            lines.extend([
+                f"### 4.{i} {question}",
+                "",
+                "（请在此回答）",
+                ""
+            ])
+
+        return '\n'.join(lines)
+
+    def mark_why_questions_answered(self, task_path: str) -> bool:
+        """
+        标记 Why Questions 已回答
+
+        Args:
+            task_path: 任务目录路径
+
+        Returns:
+            是否成功
+        """
+        research_path = Path(task_path) / "research.md"
+
+        if not research_path.exists():
+            return False
+
+        with open(research_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 更新状态标记
+        new_content = re.sub(
+            r'> \*\*状态\*\*: \[pending\]',
+            '> **状态**: [answered]',
+            content
+        )
+
+        if new_content == content:
+            # 没有变化，可能已经是 answered 或没有该标记
+            return False
+
+        with open(research_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        return True
+
+    def check_why_completion(self, task_path: str) -> Dict[str, any]:
+        """
+        检查 Why Questions 完成情况
+
+        Args:
+            task_path: 任务目录路径
+
+        Returns:
+            {
+                'has_why_section': bool,
+                'status': 'pending' | 'answered' | 'missing',
+                'total_questions': int,
+                'answered_questions': int,
+                'unanswered': List[str]
+            }
+        """
+        research_path = Path(task_path) / "research.md"
+
+        if not research_path.exists():
+            return {
+                'has_why_section': False,
+                'status': 'missing',
+                'total_questions': 0,
+                'answered_questions': 0,
+                'unanswered': []
+            }
+
+        with open(research_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 提取 Why Questions 部分
+        why_match = re.search(
+            r'## 4\. Why Questions(.*?)(?=## 5\.|\Z)',
+            content, re.DOTALL
+        )
+
+        if not why_match:
+            return {
+                'has_why_section': False,
+                'status': 'missing',
+                'total_questions': 0,
+                'answered_questions': 0,
+                'unanswered': []
+            }
+
+        why_section = why_match.group(1)
+
+        # 检查状态
+        status_match = re.search(r'> \*\*状态\*\*: \[(\w+)\]', why_section)
+        status = status_match.group(1).lower() if status_match else 'pending'
+
+        # 统计问题
+        question_pattern = r'### 4\.(\d+) (.+?)\n\n(.*?)(?=### 4\.\d+|$)'
+        questions = re.findall(question_pattern, why_section, re.DOTALL)
+        total = len(questions)
+
+        # 检查每个问题是否有回答
+        answered = 0
+        unanswered = []
+
+        for _, question_title, answer in questions:
+            answer_text = answer.strip()
+            # 检查是否有实质内容（非占位符且超过 10 字符）
+            if len(answer_text) > 10 and not answer_text.startswith('（'):
+                answered += 1
+            else:
+                unanswered.append(question_title.strip())
+
+        return {
+            'has_why_section': True,
+            'status': status,
+            'total_questions': total,
+            'answered_questions': answered,
+            'unanswered': unanswered
+        }

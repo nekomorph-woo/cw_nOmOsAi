@@ -7,15 +7,15 @@ l3_foundation - Layer 3 基础能力层
   - DynamicRule: 动态规则基类 (Layer 3 专用)
   - DynamicViolation: 动态规则违规记录
   - Severity: 严重程度
-  - AIClient: AI 调用客户端
   - ASTUtils: AST 解析工具
   - PromptBuilder: Prompt 构建器
   - RuleContext: 规则上下文
   - DynamicRuleLoader: 动态规则加载器
+
+注意: AIClient 已迁移到 lib.core 模块
 """
 
 from .dynamic_rule import DynamicRule, DynamicViolation, Severity, FileMatcher
-from .ai_client import AIClient
 from .ast_utils import ASTUtils
 from .prompt_builder import PromptBuilder, PromptTemplate
 from .rule_context import RuleContext
@@ -27,7 +27,6 @@ __all__ = [
     "DynamicViolation",
     "Severity",
     "FileMatcher",
-    "AIClient",
     "ASTUtils",
     "PromptBuilder",
     "PromptTemplate",

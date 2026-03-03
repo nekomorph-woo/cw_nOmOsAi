@@ -139,15 +139,17 @@ def should_check(file_path):
 
 ## 💡 可用的基础能力
 
-所有规则脚本都可以使用 l3_foundation 提供的基础能力：
+所有规则脚本都可以使用以下基础能力（由沙箱环境自动注入）：
 
 - `DynamicRule`: 动态规则基类 (Layer 3 专用)
 - `DynamicViolation`: 动态规则违规记录
 - `Severity`: 严重程度枚举 (ERROR, WARNING, INFO)
-- `AIClient`: AI 调用客户端
+- `AIClient`: AI 调用客户端 (来自 `lib.core`)
 - `ASTUtils`: AST 解析工具 (多语言支持)
 - `PromptBuilder`: Prompt 构建器
 - `RuleContext`: 规则上下文
+
+> **注意**: `AIClient` 已迁移到 `lib.core` 模块，但规则脚本中无需手动导入，由沙箱环境自动注入。
 
 ## 🚀 创建新规则
 

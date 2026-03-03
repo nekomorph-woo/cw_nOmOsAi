@@ -61,16 +61,34 @@ print(f"✅ 已创建并切换到分支: {branch_name}")
 **目标**: 深度思考任务的本质和价值
 
 **步骤**:
-1. 使用 WhyFirstEngine 生成 Why 问题：
+1. 使用 WhyFirstEngine 生成并注入 Why 问题（AI 增强模式）：
 ```python
 from lib.why_first_engine import WhyFirstEngine
 
 why_engine = WhyFirstEngine()
-questions = why_engine.generate_why_questions("任务名", "任务描述")
+
+# 【推荐】一键生成并注入（自动使用 AI，失败时降级到模板）
+result = why_engine.inject_questions_to_research(
+    task_path=str(task.path),
+    task_name="任务名",
+    description="任务描述",
+    use_ai=True  # AI 不可用时自动降级到固定模板
+)
+
+print(f"✅ 已生成 {result['count']} 个 Why 问题并注入到 research.md")
+print(f"   来源: {result['source']} (AI {'可用' if result['ai_available'] else '不可用'})")
+
+# 或者分步调用：
+# questions = why_engine.generate_why_questions("任务名", "任务描述", use_ai=True)
+# result = why_engine.inject_questions_to_research(str(task.path), questions=questions)
 ```
 
-2. 在 research.md 的 "Why Questions" 部分回答这些问题
-3. 将重要的决策和教训添加到 project-why.md：
+2. 在 research.md 的 "Why Questions" 部分回答这些注入的问题
+3. 回答完成后，标记 Why Questions 为已回答：
+```python
+why_engine.mark_why_questions_answered(str(task.path))
+```
+4. 将重要的决策和教训添加到 project-why.md：
 ```python
 why_engine.add_knowledge(
     category="架构决策",  # 或 核心理念/经验教训/常见问题
@@ -79,12 +97,9 @@ why_engine.add_knowledge(
 )
 ```
 
-**Why Questions 示例**:
-- 为什么需要这个功能？（核心动机）
-- 为什么现在做？（时机选择）
-- 为什么选择这种方案？（方案选择）
-- 为什么不用其他方案？（替代方案分析）
-- 核心价值是什么？（价值主张）
+**AI 增强说明**:
+- AI 可用时：基于任务描述和历史知识生成 5-8 个针对性问题
+- AI 不可用时：自动降级到 5 个固定模板问题
 
 ### 4. Research 阶段
 

@@ -307,8 +307,9 @@ class DynamicRuleLoader:
             "locals": None,
         }
 
-        # 导入 l3_foundation 模块
-        from . import dynamic_rule, ai_client, ast_utils, prompt_builder, rule_context
+        # 导入 l3_foundation 模块 + core 模块
+        from . import dynamic_rule, ast_utils, prompt_builder, rule_context
+        from lib.core import ai_client
 
         # 2. 注入白名单模块
         sandbox_globals = {

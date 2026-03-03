@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+from lib.core import AIClient
 from .rule_context import RuleContext
-from .ai_client import AIClient
 from .prompt_builder import (
     PromptTemplate,
     COMMAND_HANDLER_TEMPLATE,

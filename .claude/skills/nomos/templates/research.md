@@ -47,17 +47,12 @@ related_plan: ""
 
 ## 4. Why Questions
 
-### 4.1 为什么需要这个功能？
+> **状态**: [pending]
+> **生成时间**: {WHY_GENERATED_TIME}
+> **来源**: {WHY_SOURCE}
+> **问题数量**: {WHY_COUNT}
 
-（回答核心动机）
-
-### 4.2 为什么选择这种方案？
-
-（回答方案选择理由）
-
-### 4.3 为什么不选择其他方案？
-
-（回答替代方案的缺点）
+{WHY_QUESTIONS}
 
 ## 5. Review Comments
 

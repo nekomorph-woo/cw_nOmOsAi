@@ -205,6 +205,11 @@ class PhaseManager:
             if not state.research.approved_by:
                 return False, "Research 阶段未获人类审阅批准"
 
+            # 增强检查：验证 Why Questions 是否已回答
+            why_result = self._check_why_questions()
+            if not why_result[0]:
+                return False, why_result[1]
+
             # 增强检查：验证 research.md 中的 Review Comments
             rc_result = self._check_review_comments("research.md")
             if not rc_result[0]:
@@ -361,6 +366,57 @@ class PhaseManager:
                 }
             }
         }
+
+    # ========== Why Questions 检查 ==========
+
+    def _check_why_questions(self) -> Tuple[bool, str]:
+        """
+        检查 research.md 中的 Why Questions 是否已回答
+
+        Returns:
+            (是否通过, 原因说明)
+        """
+        research_path = self.task_path / "research.md"
+
+        if not research_path.exists():
+            return False, "research.md 不存在"
+
+        try:
+            # 导入 WhyFirstEngine
+            import sys
+            hooks_path = self.project_root / '.claude' / 'hooks'
+            if str(hooks_path) not in sys.path:
+                sys.path.insert(0, str(hooks_path))
+
+            from lib.why_first_engine import WhyFirstEngine
+
+            # 检查 Why Questions 完成情况
+            why_engine = WhyFirstEngine(str(self.project_root))
+            result = why_engine.check_why_completion(str(self.task_path))
+
+            # 没有 Why Questions 部分
+            if not result['has_why_section']:
+                return False, "research.md 中缺少 Why Questions 部分"
+
+            # 状态为 pending
+            if result['status'] == 'pending':
+                unanswered = result.get('unanswered', [])
+                if unanswered:
+                    return False, f"Why Questions 尚未完成深度思考，未回答: {unanswered[:3]}..."
+                else:
+                    return False, "Why Questions 尚未完成深度思考，请标记为已回答"
+
+            # 有未回答的问题
+            if result['unanswered']:
+                return False, f"Why Questions 有 {len(result['unanswered'])} 个问题未回答: {result['unanswered'][:3]}..."
+
+            return True, "Why Questions 检查通过"
+
+        except ImportError:
+            # WhyFirstEngine 不可用，跳过检查
+            return True, "WhyFirstEngine 不可用，跳过 Why Questions 检查"
+        except Exception as e:
+            return False, f"检查 Why Questions 时出错: {str(e)}"
 
     # ========== Review Comments 检查 ==========
 
